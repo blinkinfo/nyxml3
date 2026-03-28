@@ -23,7 +23,7 @@ def format_signal(
         "\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\u2502 \u23f0 Slot: {slot_start_str}-{slot_end_str} UTC\n"
         f"\u2502 {side_emoji} Side: {side}\n"
-        f"\u2502 \U0001f4b2 Entry Price: ${entry_price:.2f}\n"
+        f"\u2502 \U0001f4b2 Ask Price: ${entry_price:.2f}\n"
         f"\u2502 {at_line}\n"
         "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
     )
@@ -39,7 +39,7 @@ def format_skip(
         "\u23ed\ufe0f <b>No Signal</b>\n"
         "\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\u2502 \u23f0 Slot: {slot_start_str}-{slot_end_str} UTC\n"
-        f"\u2502 \U0001f4c8 Up: ${up_price:.2f}  |  \U0001f4c9 Down: ${down_price:.2f}\n"
+        f"\u2502 \U0001f4c8 Up Ask: ${up_price:.2f}  |  \U0001f4c9 Down Ask: ${down_price:.2f}\n"
         "\u2502 Neither side \u2265 $0.53 \u2014 skipping\n"
         "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
     )

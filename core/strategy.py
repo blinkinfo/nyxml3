@@ -43,7 +43,7 @@ async def check_signal() -> dict[str, Any] | None:
     up_price = prices["up_price"]
     down_price = prices["down_price"]
 
-    log.debug("Slot N+1 prices  Up=%.4f  Down=%.4f  (threshold=%.2f)", up_price, down_price, cfg.SIGNAL_THRESHOLD)
+    log.debug("Slot N+1 ask prices  Up=%.4f  Down=%.4f  (threshold=%.2f)", up_price, down_price, cfg.SIGNAL_THRESHOLD)
 
     side: str | None = None
     entry_price: float | None = None
@@ -76,7 +76,7 @@ async def check_signal() -> dict[str, Any] | None:
     token_id = prices["up_token_id"] if side == "Up" else prices["down_token_id"]
 
     log.info(
-        "SIGNAL: %s @ $%.4f for slot N+1 %s-%s UTC  token=%s",
+        "SIGNAL: %s @ ask $%.4f for slot N+1 %s-%s UTC  token=%s",
         side,
         entry_price,
         slot_n1["slot_start_str"],
