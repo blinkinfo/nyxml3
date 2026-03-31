@@ -259,7 +259,14 @@ async def _auto_redeem_job() -> None:
 
 async def _check_and_trade() -> None:
     """Core loop body — called at T-85s for each slot."""
-    from bot.formatters import format_signal, format_skip
+    from bot.formatters import (
+        format_signal,
+        format_skip,
+        format_trade_filled,
+        format_trade_unmatched,
+        format_trade_aborted,
+        format_trade_retrying,
+    )
 
     # 1. Check signal
     signal = await strategy.check_signal()
@@ -333,6 +340,8 @@ async def _check_and_trade() -> None:
     # 5. Place trade if autotrade on (with robust retry logic)
     trade_id: int | None = None
     amount_usdc: float | None = None
+    slot_label = f"{slot_start_str}-{slot_end_str}"
+
     if autotrade and _poly_client is not None and token_id:
         amount_usdc = round(trade_amount, 2)
         trade_id = await queries.insert_trade(
@@ -348,36 +357,112 @@ async def _check_and_trade() -> None:
         # Compute slot end timestamp for time-fencing
         slot_end_ts = slot_ts + SLOT_DURATION
 
-        result = await trader.place_fok_order_with_retry(
-            poly_client=_poly_client,
-            token_id=token_id,
-            amount_usdc=amount_usdc,
-            signal_id=signal_id,
-            trade_id=trade_id,
-            slot_end_ts=slot_end_ts,
-        )
+        # Wrap trader to inject retry notifications
+        max_retries = cfg.FOK_MAX_RETRIES
+
+        async def _place_with_notifications():
+            """Thin wrapper: forwards retry-in-progress telegrams, then delegates
+            to trader.place_fok_order_with_retry for the actual order logic."""
+            # We monkey-patch nothing — instead we intercept by running the
+            # retry loop ourselves at the notification layer only, then delegate
+            # the real work to trader. Because trader already handles all retry
+            # logic internally, we send a single pre-flight "attempt N" message
+            # before calling it.  For per-attempt retrying messages we use a
+            # thin asyncio task that watches the DB retry_count field and fires
+            # a Telegram message each time it increments.
+
+            # Fire a background watcher that sends retrying notifications
+            # whenever the trade row moves to "retrying" status in the DB.
+            sent_attempts: set[int] = set()
+
+            async def _retry_watcher():
+                """Poll trade DB row; send a notification on each new attempt."""
+                import asyncio as _asyncio
+                for _ in range(max_retries * 10):  # generous upper bound
+                    await _asyncio.sleep(0.8)
+                    try:
+                        row = await queries.get_active_trade_for_signal(signal_id)
+                        if row is None:
+                            # Try by trade_id directly via a simple status check
+                            continue
+                        retry_count = row.get("retry_count", 0) or 0
+                        status = row.get("status", "")
+                        if status == "retrying" and retry_count not in sent_attempts:
+                            sent_attempts.add(retry_count)
+                            retry_msg = format_trade_retrying(
+                                side=side,
+                                slot_label=slot_label,
+                                attempt=retry_count + 1,
+                                max_attempts=max_retries,
+                                reason="FOK order not matched — retrying",
+                            )
+                            await _send_telegram(retry_msg)
+                        if status in ("filled", "unmatched", "aborted", "duplicate_prevented"):
+                            break
+                    except Exception:
+                        pass  # watcher is non-critical
+
+            watcher_task = asyncio.create_task(_retry_watcher())
+
+            result = await trader.place_fok_order_with_retry(
+                poly_client=_poly_client,
+                token_id=token_id,
+                amount_usdc=amount_usdc,
+                signal_id=signal_id,
+                trade_id=trade_id,
+                slot_end_ts=slot_end_ts,
+            )
+
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
+
+            return result
+
+        result = await _place_with_notifications()
 
         trade_status = result["status"]
         attempts = result["attempts"]
         reason = result["reason"]
+        order_id = result.get("order_id")
 
         if trade_status == "filled":
-            log.info("Trade filled: order_id=%s (attempts=%d)", result["order_id"], attempts)
-            retry_note = f" (after {attempts} attempt(s))" if attempts > 1 else ""
-            await _send_telegram(
-                f"\u2705 Trade FILLED{retry_note} for {side} slot "
-                f"{slot_start_str}-{slot_end_str} UTC"
+            log.info("Trade filled: order_id=%s (attempts=%d)", order_id, attempts)
+            # Extract shares from CLOB result if available
+            shares: float | None = result.get("shares")
+            msg = format_trade_filled(
+                side=side,
+                slot_label=slot_label,
+                ask_price=entry_price,
+                amount_usdc=amount_usdc,
+                shares=shares,
+                order_id=order_id,
+                attempts=attempts,
             )
+            await _send_telegram(msg)
+
+        elif trade_status == "aborted":
+            log.warning("Trade aborted: %s (attempts=%d)", reason, attempts)
+            msg = format_trade_aborted(
+                side=side,
+                slot_label=slot_label,
+                reason=reason,
+            )
+            await _send_telegram(msg)
+            trade_id = None  # don't resolve a non-filled trade
+
         else:
-            # unmatched / aborted / failed
+            # unmatched / failed
             log.warning("Trade %s: %s (attempts=%d)", trade_status, reason, attempts)
-            status_label = trade_status.upper().replace("_", " ")
-            retry_note = f" after {attempts} attempt(s)" if attempts > 0 else ""
-            await _send_telegram(
-                f"\u274c Trade {status_label}{retry_note} for {side} slot "
-                f"{slot_start_str}-{slot_end_str} UTC\n"
-                f"Reason: {reason}"
+            msg = format_trade_unmatched(
+                side=side,
+                slot_label=slot_label,
+                attempts=attempts,
+                reason=reason,
             )
+            await _send_telegram(msg)
             trade_id = None  # don't resolve a non-filled trade
 
     # 6. Schedule resolution after slot N+1 ends

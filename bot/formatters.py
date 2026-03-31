@@ -93,6 +93,90 @@ def format_resolution(
 
 
 # ---------------------------------------------------------------------------
+# Trade execution notifications (sent by scheduler during FOK retry loop)
+# ---------------------------------------------------------------------------
+
+def format_trade_filled(
+    side: str,
+    slot_label: str,
+    ask_price: float,
+    amount_usdc: float,
+    shares: float | None,
+    order_id: str | None,
+    attempts: int,
+) -> str:
+    """Rich fill confirmation box sent when a FOK order is MATCHED."""
+    side_emoji = "\U0001f4c8" if side == "Up" else "\U0001f4c9"
+    attempt_note = f" (attempt {attempts})" if attempts > 1 else ""
+    shares_line = ""
+    if shares is not None:
+        shares_line = f"\u2502 \U0001f4ca Shares: {shares:.4f}\n"
+    oid_line = ""
+    if order_id:
+        oid_short = (order_id[:10] + "..." + order_id[-6:]) if len(order_id) > 16 else order_id
+        oid_line = f"\u2502 \U0001f9fe Order ID: <code>{oid_short}</code>\n"
+    return (
+        f"\u2705 <b>Trade FILLED{attempt_note}</b>\n"
+        "\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\u2502 {side_emoji} Side: {side}  \u23f0 {slot_label} UTC\n"
+        f"\u2502 \U0001f4b2 Ask Price: ${ask_price:.4f}\n"
+        f"\u2502 \U0001f4b5 Amount: ${amount_usdc:.2f} USDC\n"
+        f"{shares_line}"
+        f"{oid_line}"
+        "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    )
+
+
+def format_trade_unmatched(
+    side: str,
+    slot_label: str,
+    attempts: int,
+    reason: str,
+) -> str:
+    """Rich failure box sent when all FOK retry attempts are exhausted."""
+    side_emoji = "\U0001f4c8" if side == "Up" else "\U0001f4c9"
+    return (
+        "\u274c <b>Trade UNMATCHED</b>\n"
+        "\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\u2502 {side_emoji} Side: {side}  \u23f0 {slot_label} UTC\n"
+        f"\u2502 \U0001f504 Attempts: {attempts}\n"
+        f"\u2502 \U0001f4cb Reason: {reason}\n"
+        "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    )
+
+
+def format_trade_aborted(
+    side: str,
+    slot_label: str,
+    reason: str,
+) -> str:
+    """Rich abort box sent when time fence or duplicate guard fires."""
+    side_emoji = "\U0001f4c8" if side == "Up" else "\U0001f4c9"
+    return (
+        "\u26d4 <b>Trade ABORTED</b>\n"
+        "\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\u2502 {side_emoji} Side: {side}  \u23f0 {slot_label} UTC\n"
+        f"\u2502 \U0001f4cb Reason: {reason}\n"
+        "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    )
+
+
+def format_trade_retrying(
+    side: str,
+    slot_label: str,
+    attempt: int,
+    max_attempts: int,
+    reason: str,
+) -> str:
+    """Compact inline message sent before each retry attempt (no box)."""
+    side_emoji = "\U0001f4c8" if side == "Up" else "\U0001f4c9"
+    return (
+        f"\U0001f504 <b>Trade retrying</b> (attempt {attempt}/{max_attempts}) "
+        f"{side_emoji} {side} {slot_label} UTC \u2014 {reason}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Redemption formatters
 # ---------------------------------------------------------------------------
 
