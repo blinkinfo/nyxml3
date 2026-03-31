@@ -36,6 +36,14 @@ TELEGRAM_CHAT_ID: str | None = os.getenv("TELEGRAM_CHAT_ID")
 TRADE_AMOUNT_USDC: float = float(os.getenv("TRADE_AMOUNT_USDC", "1.0"))
 
 # ---------------------------------------------------------------------------
+# FOK Retry Settings
+# ---------------------------------------------------------------------------
+FOK_MAX_RETRIES: int = int(os.getenv("FOK_MAX_RETRIES", "3"))
+FOK_RETRY_DELAY_BASE: float = float(os.getenv("FOK_RETRY_DELAY_BASE", "2.0"))
+FOK_RETRY_DELAY_MAX: float = float(os.getenv("FOK_RETRY_DELAY_MAX", "5.0"))
+FOK_SLOT_CUTOFF_SECONDS: int = int(os.getenv("FOK_SLOT_CUTOFF_SECONDS", "30"))
+
+# ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
 DB_PATH: str = os.getenv("DB_PATH", "autopoly.db")

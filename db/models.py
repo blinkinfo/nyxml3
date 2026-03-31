@@ -1,4 +1,4 @@
-"""SQLite schema initialisation — creates tables and inserts default settings."""
+"""SQLite schema initialisation -- creates tables and inserts default settings."""
 
 import aiosqlite
 import config as cfg
@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS trades (
     is_win INTEGER,
     pnl REAL,
     resolved_at TIMESTAMP,
+    retry_count INTEGER DEFAULT 0,
+    last_retry_at TIMESTAMP,
     FOREIGN KEY (signal_id) REFERENCES signals(id)
 );
 
@@ -76,4 +78,19 @@ async def init_db(db_path: str | None = None) -> None:
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value),
             )
+        await db.commit()
+
+
+async def migrate_db(db_path: str | None = None) -> None:
+    """Add new columns to existing tables if they don't exist (safe to run repeatedly)."""
+    path = db_path or cfg.DB_PATH
+    async with aiosqlite.connect(path) as db:
+        # Check existing columns in trades table
+        cursor = await db.execute("PRAGMA table_info(trades)")
+        columns = {row[1] for row in await cursor.fetchall()}
+
+        if "retry_count" not in columns:
+            await db.execute("ALTER TABLE trades ADD COLUMN retry_count INTEGER DEFAULT 0")
+        if "last_retry_at" not in columns:
+            await db.execute("ALTER TABLE trades ADD COLUMN last_retry_at TIMESTAMP")
         await db.commit()

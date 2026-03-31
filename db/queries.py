@@ -154,6 +154,42 @@ async def update_trade_status(trade_id: int, status: str, order_id: str | None =
         await db.commit()
 
 
+
+async def update_trade_retry(trade_id: int, status: str, retry_count: int,
+                             order_id: str | None = None) -> None:
+    """Update trade with retry information."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(_db()) as db:
+        if order_id:
+            await db.execute(
+                "UPDATE trades SET status = ?, retry_count = ?, last_retry_at = ?, order_id = ? "
+                "WHERE id = ?",
+                (status, retry_count, now, order_id, trade_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE trades SET status = ?, retry_count = ?, last_retry_at = ? "
+                "WHERE id = ?",
+                (status, retry_count, now, trade_id),
+            )
+        await db.commit()
+
+
+async def get_active_trade_for_signal(signal_id: int) -> dict[str, Any] | None:
+    """Check if a filled or pending trade already exists for this signal.
+
+    Used as a duplicate guard before retrying FOK orders -- if a trade is
+    already 'filled' we must not place another order for the same signal.
+    """
+    async with aiosqlite.connect(_db()) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM trades WHERE signal_id = ? AND status = 'filled' LIMIT 1",
+            (signal_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
 async def resolve_trade(trade_id: int, outcome: str, is_win: bool, pnl: float) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(_db()) as db:

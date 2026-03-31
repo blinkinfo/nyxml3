@@ -330,7 +330,7 @@ async def _check_and_trade() -> None:
     )
     await _send_telegram(msg)
 
-    # 5. Place trade if autotrade on
+    # 5. Place trade if autotrade on (with robust retry logic)
     trade_id: int | None = None
     amount_usdc: float | None = None
     if autotrade and _poly_client is not None and token_id:
@@ -344,18 +344,41 @@ async def _check_and_trade() -> None:
             amount_usdc=amount_usdc,
             status="pending",
         )
-        try:
-            response = await trader.place_fok_order(_poly_client, token_id, amount_usdc)
-            order_id = None
-            if isinstance(response, dict):
-                order_id = response.get("orderID") or response.get("order_id")
-            await queries.update_trade_status(trade_id, "filled", order_id=order_id)
-            log.info("Trade filled: order_id=%s", order_id)
-        except Exception:
-            log.exception("FOK order failed")
-            await queries.update_trade_status(trade_id, "failed")
-            await _send_telegram(f"\u274c Trade FAILED for {side} slot {slot_start_str}-{slot_end_str} UTC")
-            trade_id = None  # don't resolve a failed trade
+
+        # Compute slot end timestamp for time-fencing
+        slot_end_ts = slot_ts + SLOT_DURATION
+
+        result = await trader.place_fok_order_with_retry(
+            poly_client=_poly_client,
+            token_id=token_id,
+            amount_usdc=amount_usdc,
+            signal_id=signal_id,
+            trade_id=trade_id,
+            slot_end_ts=slot_end_ts,
+        )
+
+        trade_status = result["status"]
+        attempts = result["attempts"]
+        reason = result["reason"]
+
+        if trade_status == "filled":
+            log.info("Trade filled: order_id=%s (attempts=%d)", result["order_id"], attempts)
+            retry_note = f" (after {attempts} attempt(s))" if attempts > 1 else ""
+            await _send_telegram(
+                f"\u2705 Trade FILLED{retry_note} for {side} slot "
+                f"{slot_start_str}-{slot_end_str} UTC"
+            )
+        else:
+            # unmatched / aborted / failed
+            log.warning("Trade %s: %s (attempts=%d)", trade_status, reason, attempts)
+            status_label = trade_status.upper().replace("_", " ")
+            retry_note = f" after {attempts} attempt(s)" if attempts > 0 else ""
+            await _send_telegram(
+                f"\u274c Trade {status_label}{retry_note} for {side} slot "
+                f"{slot_start_str}-{slot_end_str} UTC\n"
+                f"Reason: {reason}"
+            )
+            trade_id = None  # don't resolve a non-filled trade
 
     # 6. Schedule resolution after slot N+1 ends
     resolve_time = datetime.fromtimestamp(slot_ts + SLOT_DURATION + 15, tz=timezone.utc)
