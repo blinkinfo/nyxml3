@@ -1,150 +1,322 @@
-# AutoPoly - BTC Up/Down 5-Min Trading Bot
+# AutoPoly - BTC 5-Min Pattern Trading Bot
 
-Automated Polymarket trading bot that monitors BTC 5-minute Up/Down markets, generates signals based on price momentum, and optionally executes FOK (Fill-Or-Kill) market orders via Telegram.
+<div align="center">
 
-## How It Works
+Automated Polymarket trading bot for BTC 5-minute Up/Down binary options, powered by **6-candle historical pattern matching** and controlled entirely through **Telegram**.
 
-### Strategy
+[Features](#-features) • [How It Works](#-how-it-works) • [Setup](#-setup) • [Commands](#-telegram-bot-commands) • [Architecture](#-architecture)
 
-Every 5 minutes, Polymarket runs a BTC Up/Down market (will BTC price go up or down in the next 5 minutes). The bot:
+</div>
 
-1. **Monitors** the NEXT slot's (N+1) Up/Down prices 85 seconds before the current slot ends (T-85s)
-2. **Signals** if either side in the N+1 market reaches >= $0.51 (indicating early market consensus)
-3. **ADX Filter** — computes ADX(14) from Coinbase BTC-USD 5-minute candles:
-   - If ADX is **rising** (strengthening trend), the signal is **flipped** (Up becomes Down, Down becomes Up) to fade the consensus
-   - If ADX is **falling or flat**, the original signal is kept as-is
-4. **Trades** the final (possibly flipped) side in the N+1 slot
-5. **Resolves** the outcome after the N+1 slot ends and tracks P&L
+---
 
-The key insight: the N+1 market opens for trading while slot N is still active. If the N+1 market already shows >= 51% conviction in one direction, the bot uses ADX to decide whether to ride or fade that consensus.
+## 💡 What It Does
 
-### ADX Filter
+Every 5 minutes, Polymarket opens a binary market: **"Will BTC go Up or Down in the next 5 minutes?"**
 
-The **Average Directional Index (ADX)** measures trend strength using Wilder's smoothing method:
+AutoPoly watches BTC price candles on Coinbase, matches the recent 6-candle pattern against a table of 22 historically-validated patterns, and if there's a match -- executes a Fill-Or-Kill order on the predicted side.
 
-- **Data source**: Coinbase public API — 35 most recent 5-minute BTC-USD candles (no auth required)
-- **Period**: ADX(14) — standard 14-period calculation
-- **Algorithm**: True Range + Directional Movement (+DM/-DM) smoothed with Wilder's method, producing +DI/-DI, then DX, then ADX
-- **Decision logic**:
-  - ADX rising (current > previous) = trend strengthening = **flip the signal** (contrarian fade)
-  - ADX falling/flat = trend weakening = **keep original signal** (ride consensus)
-- **Fallback**: If Coinbase data is unavailable, the bot proceeds with the original (unflipped) signal
+**The edge:** Certain recurring 6-candle sequence patterns (e.g., `DDDDDD`, `UUDUUU`, `DUDUDU`) have historically shown directional bias. The bot trades only on high-confidence patterns and skips everything else.
 
-### Timing
+---
 
-- Slots align to clock: `:00`, `:05`, `:10`, `:15` ... `:55` of each hour
-- Signal check: 3 minutes 35 seconds into each slot (T-85s before end)
-- Example: Slot 10:00-10:05 -> check N+1 (10:05-10:10) prices at 10:03:35 UTC -> trade in 10:05-10:10 if threshold met
+## ⚡ Features
 
-## Features
+- **Pattern Strategy** -- Matches 6-candle BTC-USD sequences against 22 historically-validated patterns
+- **Smart Signal Filtering** -- Only trades on known patterns; skips the rest
+- **Live Telegram Dashboard** -- Real-time signal alerts, trade resolutions, P&L analytics
+- **Auto-Trading** -- Optional FOK (Fill-Or-Kill) market orders executed automatically
+- **Demo Mode** -- Paper-trade with a simulated $1,000 bankroll to test strategies risk-free
+- **Auto-Redeem** -- Periodically scans and auto-redeems resolved winning positions on-chain
+- **Export Data** -- Download full signal/trade history as CSV or Excel
+- **SQLite Persistence** -- All data survives restarts; unresolved signals auto-recover
+- **Single-Chat Auth** -- Locked to your Telegram chat ID
+- **One-Click Deploy** -- Railway-ready with `Procfile`
 
-- Real-time signal detection every 5 minutes
-- ADX(14) trend filter with automatic signal flipping
-- Optional auto-trading with configurable USDC amount
-- Full Telegram bot interface with inline keyboards
-- Signal and trade performance dashboards
-- Win/loss tracking with streak analytics
-- SQLite database for persistence across restarts
-- Recovery of unresolved signals on restart
-- Single-chat authentication
-- One-click Railway deployment
+---
 
-## Environment Variables
+## ⚙️ How It Works
+
+### The Pattern Strategy
+
+**Every 5 minutes at T-85s** (85 seconds before the current slot ends), the bot:
+
+1. **Fetches** the last 10 confirmed-closed 5-minute BTC-USD candles from Coinbase
+2. **Drops** the tail candle (still-forming at T-85s) for data safety
+3. **Builds a 6-char pattern** from the newest 6 confirmed candles: `[N-1][N-2][N-3][N-4][N-5][N-6]`
+   - `U` = candle closed >= opened (green)
+   - `D` = candle closed < opened (red)
+4. **Looks up** the pattern in `PATTERN_TABLE` (22 pre-defined patterns)
+5. **If matched** → fires a signal with the predicted side (Up or Down)
+6. **If no match** → skips this slot, notifies you on Telegram
+
+### The 22 Patterns
+
+| Pattern | Prediction | Pattern | Prediction |
+|---------|-----------|---------|------------|
+| `DDDDDD` | UP | `UDUUDU` | DOWN |
+| `DUUUDU` | DOWN | `DUUDDD` | UP |
+| `DUUUUD` | DOWN | `UDDUDD` | DOWN |
+| `UDDUUU` | UP | `DUUUUU` | DOWN |
+| `DUDDUD` | DOWN | `UUDUUD` | UP |
+| `DUUUDD` | DOWN | `DDUDDD` | UP |
+| `UDDUUD` | UP | `DUDDDU` | DOWN |
+| `DUDUDU` | DOWN | `UUDUUU` | DOWN |
+| `UDDDDU` | UP | `DDUDDU` | UP |
+| `UUUDUD` | DOWN | | |
+| `DUDUUU` | UP | | |
+| `UUUUUD` | DOWN | | |
+| `DDDUUD` | DOWN | | |
+
+> **Note:** These 22 patterns are currently hardcoded. They were derived from historical analysis. You can extend the table or modify the strategy in `core/strategies/pattern_strategy.py`.
+
+### Signal Flow
+
+```
+[Every 5 min at T-85s]
+  ├─ 1. PatternStrategy.check_signal() fetches 10 confirmed candles from Coinbase
+  ├─ 2. Builds 6-char U/D pattern, looks up in PATTERN_TABLE
+  ├─ 3a. Match found → fetches slot prices (Gamma + CLOB), returns signal
+  ├─ 3b. No match → returns skip, logs it, notifies you
+  ├─ 4. Signal logged to DB
+  ├─ 5. TradeManager.check() → always allowed (passthrough)
+  ├─ 6. Demo mode → deducts bankroll, creates dummy trade
+  ├─ 7. Autotrading → places FOK order with retry logic
+  └─ 8. Schedules resolution for slot_end + 30s
+
+[Resolution: slot_end + 30s]
+  ├─ 1. Polls Coinbase for the slot's 5-min candle (up to 5 retries)
+  ├─ 2. close >= open → "Up", else "Down"
+  ├─ 3. P&L calculated: win = amount * (1/entry - 1), loss = -amount
+  ├─ 4. Updates signal + trade in DB
+  └─ 5. Sends resolution notification on Telegram
+
+[Background jobs]
+  ├─ Reconciler: every 5 min, retries resolution for persistent queue items
+  └─ Auto-Redeem: every 5 min if enabled, scans & reclaims resolved positions
+```
+
+### Order Execution
+
+When autotrading is enabled:
+- Uses **Fill-Or-Kill (FOK)** market orders via `py-clob-client`
+- **Up to 3 retries** with exponential backoff (2s → 4s → 5s)
+- **Time fence:** aborts if < 30 seconds remain in the slot
+- **Duplicate guard:** checks DB before each retry to prevent double-fills
+
+### Candle Timing Safety
+
+The bot drops the most recent candle from the Coinbase response because at T-85s, the current 5-minute slot is still open. This ensures the pattern is built from **confirmed, closed candles only**.
+
+---
+
+## 🚀 Setup
+
+### Prerequisites
+
+- **Python 3.10+**
+- **Polymarket account** with funded wallet (Polygon)
+- **Telegram bot token** from [@BotFather](https://t.me/BotFather)
+- **Ethereum private key** for your Polymarket wallet
+
+### Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `POLYMARKET_PRIVATE_KEY` | Yes | - | Ethereum private key for Polymarket |
-| `POLYMARKET_FUNDER_ADDRESS` | Yes | - | Funder/proxy wallet address |
-| `POLYMARKET_SIGNATURE_TYPE` | No | `2` | Signature type (0, 1, or 2) |
-| `TELEGRAM_BOT_TOKEN` | Yes | - | Telegram bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | Yes | - | Authorised Telegram chat ID |
-| `TRADE_AMOUNT_USDC` | No | `1.0` | Default trade amount in USDC |
-| `DB_PATH` | No | `autopoly.db` | SQLite database path |
+| `POLYMARKET_PRIVATE_KEY` | ✅ | - | Ethereum private key for Polymarket wallet |
+| `POLYMARKET_FUNDER_ADDRESS` | ✅ | - | Your Polygon wallet address |
+| `POLYMARKET_SIGNATURE_TYPE` | ❌ | `2` | Signature type for CLOB authentication |
+| `TELEGRAM_BOT_TOKEN` | ✅ | - | Bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | ✅ | - | Your authorized Telegram chat ID |
+| `TRADE_AMOUNT_USDC` | ❌ | `1.0` | Default trade size in USDC |
+| `STRATEGY_NAME` | ❌ | `pattern` | Active strategy module name |
+| `FOK_MAX_RETRIES` | ❌ | `3` | Maximum FOK order retry attempts |
+| `FOK_RETRY_DELAY_BASE` | ❌ | `2.0` | Base retry delay in seconds |
+| `FOK_RETRY_DELAY_MAX` | ❌ | `5.0` | Maximum retry delay in seconds |
+| `FOK_SLOT_CUTOFF_SECONDS` | ❌ | `30` | Abort order if less than this time remains |
+| `AUTO_REDEEM_INTERVAL_MINUTES` | ❌ | `5` | Auto-redeem scan interval |
+| `POLYGON_RPC_URL` | ❌ | `https://polygon-rpc.com` | RPC endpoint for on-chain redemptions |
+| `DB_PATH` | ❌ | `autopoly.db` | SQLite database file path |
 
-## Telegram Bot Setup
+### Telegram Bot Setup
 
 1. Open Telegram and message [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` and follow the prompts
-3. Copy the bot token -> set as `TELEGRAM_BOT_TOKEN`
+2. Send `/newbot` and follow the prompts to create your bot
+3. Copy the bot token → set as `TELEGRAM_BOT_TOKEN`
 4. Message your new bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates`
-5. Find your `chat.id` -> set as `TELEGRAM_CHAT_ID`
+5. Find your `chat.id` in the response → set as `TELEGRAM_CHAT_ID`
 
-## Railway Deployment
-
-1. Fork this repository
-2. Go to [Railway](https://railway.app) and create a new project
-3. Connect your GitHub repo
-4. Add environment variables in the Railway dashboard
-5. Deploy - Railway will use the `Procfile` automatically
-
-The bot runs as a worker process (no web server needed).
-
-## Local Development
+### Local Development
 
 ```bash
 # Clone the repo
-git clone https://github.com/blinkinfo/autopoly.git
-cd autopoly
+git clone https://github.com/blinkinfo/patbot.git
+cd patbot
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Copy and fill in environment variables
-cp .env.example .env
-# Edit .env with your values
+# Set up environment variables
+cp .env.example .env  # then edit with your values
 
 # Run
 python main.py
 ```
 
-## Bot Commands
+### Railway Deployment
+
+1. Fork this repository
+2. Go to [Railway](https://railway.app) and create a new project from GitHub
+3. Add all environment variables in the Railway dashboard
+4. Deploy -- the `Procfile` (`worker: python main.py`) runs automatically
+
+---
+
+## 📱 Telegram Bot Commands
+
+### Navigation
 
 | Command | Description |
 |---------|-------------|
-| `/start` | Main menu with inline keyboard |
-| `/status` | Bot status, balance, connection info |
-| `/signals` | Signal performance dashboard |
-| `/trades` | Trade P&L dashboard |
-| `/settings` | Toggle autotrade, set trade amount |
-| `/help` | Command reference |
+| `/start` | Welcome message + main menu |
+| `/help` | Command reference + strategy explanation |
+| `/status` | Portfolio overview, balance, bot uptime, last signal |
+| `/settings` | Toggle autotrade, change trade amount, manage demo mode |
 
-## Project Structure
+### Analytics
+
+| Command | Description |
+|---------|-------------|
+| `/signals` | Signal performance dashboard - win rate, streaks, recent history |
+| `/trades` | Trade P&L dashboard - deployed capital, net P&L, ROI |
+| `/demo` | Demo trading dashboard with simulated bankroll tracking |
+| `/redemptions` | On-chain redemption history |
+
+### Actions
+
+| Command | Description |
+|---------|-------------|
+| `/redeem` | Scan and redeem resolved winning positions (dry-run first) |
+
+### Inline Buttons
+
+The bot responds with inline keyboards for:
+- **Time filters:** Last 10 | Last 50 | All Time (for signals/trades/demo)
+- **Export:** Download CSV or Excel
+- **Toggles:** Autotrade on/off, Auto-redeem on/off, Demo mode on/off
+- **Inputs:** Trade amount setting, Demo bankroll setting & reset
+
+---
+
+## 🏗️ Architecture
+
+### Project Structure
 
 ```
-autopoly/
-|-- bot/              # Telegram bot layer
-|   |-- handlers.py   # Command & callback handlers
-|   |-- keyboards.py  # Inline keyboard layouts
-|   |-- formatters.py # Message formatting (UTC timeslots + ADX info)
-|   |-- middleware.py  # Chat ID auth guard
-|-- core/             # Trading engine
-|   |-- adx.py        # ADX(14) calculator (Coinbase candles + Wilder's smoothing)
-|   |-- strategy.py   # Signal detection (N+1 prices at T-85s, $0.51 threshold, ADX filter)
-|   |-- trader.py     # FOK order execution
-|   |-- resolver.py   # Outcome polling
-|   |-- scheduler.py  # APScheduler 5-min loop
-|-- polymarket/       # Polymarket API layer
-|   |-- client.py     # ClobClient with L2 creds
-|   |-- markets.py    # Slot boundaries & Gamma API
-|   |-- account.py    # Balance & positions
-|-- db/               # Database layer
-|   |-- models.py     # SQLite schema
-|   |-- queries.py    # CRUD & analytics
-|-- config.py         # Environment config (includes ADX settings)
-|-- main.py           # Entry point
+patbot/
+├── main.py                    # Entry point - startup, DB init, bot polling
+├── config.py                  # Environment config + hardcoded constants
+├── requirements.txt           # Python dependencies
+├── Procfile                   # Railway: worker: python main.py
+│
+├── bot/                       # Telegram bot layer
+│   ├── handlers.py            # All command & callback handlers
+│   ├── keyboards.py           # Inline keyboard layouts
+│   ├── formatters.py          # Message formatting utilities
+│   └── middleware.py          # Chat ID auth guard
+│
+├── core/                      # Trading engine
+│   ├── strategy.py            # Strategy orchestrator (registry-based)
+│   ├── scheduler.py           # APScheduler: trading loop, resolution, reconciliation
+│   ├── trader.py              # FOK order execution with retry logic
+│   ├── resolver.py            # Slot resolution via Coinbase candles
+│   ├── trade_manager.py       # Pre-trade gate (passthrough)
+│   ├── redeemer.py            # On-chain CTF redemption via web3.py
+│   ├── pending_queue.py       # Persistent retry queue (JSON-backed)
+│   └── strategies/            # Strategy plugins
+│       ├── __init__.py        # Registry: "pattern" -> PatternStrategy
+│       ├── base.py            # Abstract BaseStrategy interface
+│       └── pattern_strategy.py # 6-candle pattern matching (THE active strategy)
+│
+├── db/                        # Database layer
+│   ├── models.py              # SQLite schema + init/migrate
+│   └── queries.py             # All CRUD + analytics helpers
+│
+├── polymarket/                # Polymarket API layer
+│   ├── client.py              # ClobClient wrapper (L2 credential derivation)
+│   ├── markets.py             # Slot boundaries, Gamma + CLOB price fetching
+│   └── account.py             # Balance, positions, connection status
+│
+└── data/                      # Runtime data (auto-created)
+    └── pending_slots.json     # Persistent unresolved slot queue
 ```
 
-## Technical Notes
+### Database Schema
 
-- Uses `aiosqlite` for non-blocking database access
-- Uses `httpx.AsyncClient` for Gamma API and Coinbase candle API calls
-- ADX(14) computed from scratch using Wilder's smoothing (no external TA library needed)
-- `py-clob-client` calls wrapped in `asyncio.to_thread()` (synchronous library)
-- APScheduler and Telegram bot share the same async event loop
-- FOK order amounts rounded to 2 decimal places (py-clob-client issue #121)
-- All timestamps stored and displayed in UTC
-- If Coinbase API is unavailable, the ADX filter gracefully degrades (original signal kept)
+**4 Tables:**
 
-## License
+| Table | Purpose |
+|-------|---------|
+| `signals` | Every signal check - side, price, match/skip, win/loss |
+| `trades` | Executed/Filled orders - amount, P&L, retry count, status |
+| `settings` | Key-value config - autotrade, trade amount, demo mode |
+| `redemptions` | On-chain redemption records - tx hash, gas, status |
+
+Default settings seeded on first run:
+- `autotrade_enabled`: false
+- `demo_trade_enabled`: false
+- `auto_redeem_enabled`: false
+- `demo_bankroll_usdc`: 1000.00
+- `trade_amount_usdc`: from config
+
+### Key Technical Decisions
+
+- **Async-first:** `aiosqlite` and `httpx.AsyncClient` throughout; `py-clob-client` (sync) wrapped in `asyncio.to_thread()`
+- **Strategy Registry:** Strategies are pluggable via `core/strategies/__init__.py` -- add new strategies by registering them there
+- **Graceful Degradation:** If Coinbase API is unavailable, the bot skips the slot and retries next cycle
+- **Persistent Queue:** Unresolved slots stored in `data/pending_slots.json` and retried by the reconciler every 5 minutes
+- **Startup Recovery:** On boot, immediately resolves any unresolved signals from previous run
+
+---
+
+## 📦 Dependencies
+
+```
+py-clob-client>=0.34.0    # Polymarket order execution
+python-telegram-bot>=20.0 # Telegram bot framework (async)
+httpx>=0.25.0             # HTTP client for APIs
+apscheduler>=3.10.0       # Task scheduling
+python-dotenv>=1.0.0      # Environment variable loading
+aiosqlite>=0.19.0         # Async SQLite
+openpyxl>=3.1.0           # Excel export
+web3>=6.0.0               # On-chain redemption transactions
+```
+
+---
+
+## 🔄 Extending: Adding New Strategies
+
+The bot supports pluggable strategies:
+
+1. Create a new class in `core/strategies/your_strategy.py` that extends `BaseStrategy`
+2. Implement `async def check_signal() -> dict[str, Any] | None`
+3. Register it in `core/strategies/__init__.py`: `STRATEGIES["your_strategy"] = YourStrategy`
+4. Set `STRATEGY_NAME=your_strategy` in your environment variables
+
+See `pattern_strategy.py` for a complete reference implementation.
+
+---
+
+## ⚠️ Risk Warning
+
+**This is experimental software.** Trading binary options carries significant risks. The pattern strategy is based on historical analysis but **does not guarantee future results**. Only trade with funds you can afford to lose.
+
+- Always test in **demo mode** first using `/settings` > toggle demo trading
+- Monitor resolution accuracy via `/signals` and `/demo` before enabling real trades
+- The bot makes autonomous trading decisions -- review your strategy regularly
+
+---
+
+## 📄 License
 
 MIT
