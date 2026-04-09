@@ -594,13 +594,14 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await cmd_retrain(update, context)
 
     elif data == "ml_promote_anyway":
-        await query.answer()
-        # User explicitly chose to promote a blocked candidate
+        # Answer immediately with cache_time to suppress Telegram re-fires on double-tap
+        await query.answer("Promoting...", cache_time=10)
         from ml import model_store
-        from core.strategies.ml_strategy import request_model_reload
+        from core.strategies.ml_strategy import request_model_reload, set_model as _set_model
         if not model_store.has_model("candidate"):
             await query.message.reply_text(
-                "\u274c No candidate model found. Please retrain first.",
+                "&#x274C; No candidate model found. Please retrain first.\n"
+                "<i>(If you already promoted, the candidate was consumed.)</i>",
                 parse_mode="HTML",
                 reply_markup=ml_menu(),
             )
@@ -615,8 +616,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             try:
                 promoted = await model_store.load_model_from_db("current")
                 if promoted:
-                    from core.strategies.ml_strategy import set_model
-                    set_model(promoted)
+                    _set_model(promoted)
             except Exception:
                 log.exception("ml_promote_anyway: failed to preload promoted model into strategy (non-fatal)")
             request_model_reload()
@@ -624,7 +624,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             threshold = await queries.get_ml_threshold()
             text = format_model_status("current (force-promoted)", meta, threshold)
             await query.message.reply_text(
-                f"{text}\n\n\u26a0\ufe0f Candidate promoted despite failing the 59% gate. "
+                f"{text}\n\n&#x26A0;&#xFE0F; Candidate promoted despite failing the 59% gate. "
                 "Monitor live performance closely.",
                 parse_mode="HTML",
                 reply_markup=ml_menu(),
@@ -1000,7 +1000,11 @@ async def cmd_promote_model(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     else:
         send = update.message.reply_text
     if not model_store.has_model("candidate"):
-        await send("No candidate model to promote. Use /retrain first.", parse_mode="HTML")
+        await send(
+            "No candidate model to promote. Use /retrain first.\n"
+            "<i>(If you already promoted, the candidate was consumed.)</i>",
+            parse_mode="HTML",
+        )
         return
     # Promote on disk first, then persist to DB so it survives container restarts
     model_store.promote_candidate()

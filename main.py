@@ -191,6 +191,13 @@ def main() -> None:
                 if disk_model:
                     ml_strategy.set_model(disk_model)
                     log.info("Startup: ML model loaded from disk (fallback)")
+                    # Back-fill DB so the next redeploy can load from DB (ephemeral disk)
+                    try:
+                        disk_meta = model_store.load_metadata("current") or {}
+                        await model_store.save_model_to_db(disk_model, "current", disk_meta)
+                        log.info("Startup: disk model back-filled to DB for next redeploy")
+                    except Exception:
+                        log.exception("Startup: failed to back-fill disk model to DB (non-fatal)")
                 else:
                     log.warning(
                         "Startup: No ML model found — signals will be skipped until retrain"
