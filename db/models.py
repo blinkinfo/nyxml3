@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS model_registry (
     path TEXT,
     metadata TEXT
 );
+
+CREATE TABLE IF NOT EXISTS model_blobs (
+    slot TEXT PRIMARY KEY,
+    blob BLOB NOT NULL,
+    metadata TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 DEFAULT_SETTINGS = {
