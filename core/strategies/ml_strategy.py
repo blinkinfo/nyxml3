@@ -32,6 +32,17 @@ _RELOAD_REQUESTED = False
 _PRELOADED_MODEL = None
 
 
+def set_model(model) -> None:
+    """Inject a pre-loaded model instance at startup (or after retrain/promote).
+
+    Called from main.py post_init after loading the model from DB or disk.
+    The injected model is consumed by _load_model() on the next MLStrategy
+    instantiation or reload cycle.
+    """
+    global _PRELOADED_MODEL
+    _PRELOADED_MODEL = model
+
+
 def request_model_reload() -> None:
     """Signal that the model should be reloaded on the next check_signal call."""
     global _RELOAD_REQUESTED
