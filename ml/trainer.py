@@ -221,7 +221,8 @@ def walk_forward_validation(X: np.ndarray, y: np.ndarray) -> dict:
     Returns:
         dict with keys:
           fold_results  -- list of per-fold dicts (fold, train_size, val_size,
-                           test_size, threshold, val_wr, test_wr, test_trades)
+                           test_size, up_threshold, down_threshold, val_wr,
+                           down_val_wr, test_wr, test_trades)
           avg_wr        -- mean test WR across all folds
           std_wr        -- std dev of test WR across all folds
           min_wr        -- minimum per-fold test WR
@@ -299,15 +300,24 @@ def walk_forward_validation(X: np.ndarray, y: np.ndarray) -> dict:
         fold_val_probs = fold_model.predict(X_fold_val)
         fold_threshold, fold_val_wr, fold_val_tpd = sweep_threshold(fold_val_probs, y_fold_val)
 
+        # DOWN threshold sweep on fold val set
+        fold_down_probs_val = 1.0 - fold_val_probs
+        fold_y_val_down = 1 - y_fold_val
+        fold_down_threshold, fold_down_val_wr, fold_down_val_tpd = sweep_threshold(
+            fold_down_probs_val, fold_y_val_down
+        )
+
         # Evaluate on strictly held-out test window using threshold from val
         fold_test_probs = fold_model.predict(X_fold_test)
         fold_test_metrics = evaluate_at_threshold(fold_test_probs, y_fold_test, fold_threshold)
 
         log.info(
-            "walk_forward fold %d/%d: threshold=%.3f val_wr=%.4f "
+            "walk_forward fold %d/%d: up_threshold=%.3f val_wr=%.4f "
+            "down_threshold=%.3f down_val_wr=%.4f "
             "test_wr=%.4f test_trades=%d",
             fold_num, WF_FOLDS,
             fold_threshold, fold_val_wr,
+            fold_down_threshold, fold_down_val_wr,
             fold_test_metrics["wr"], fold_test_metrics["trades"],
         )
 
@@ -316,8 +326,10 @@ def walk_forward_validation(X: np.ndarray, y: np.ndarray) -> dict:
             "train_size": fold_val_start,
             "val_size": trainval_end - fold_val_start,
             "test_size": test_end - test_start,
-            "threshold": fold_threshold,
+            "up_threshold": fold_threshold,
+            "down_threshold": fold_down_threshold,
             "val_wr": fold_val_wr,
+            "down_val_wr": fold_down_val_wr,
             "test_wr": fold_test_metrics["wr"],
             "test_trades": fold_test_metrics["trades"],
             "test_trades_per_day": fold_test_metrics["trades_per_day"],
@@ -341,9 +353,9 @@ def walk_forward_validation(X: np.ndarray, y: np.ndarray) -> dict:
     for r in fold_results:
         log.info(
             "  fold %d: train_size=%d val_size=%d test_size=%d "
-            "thresh=%.3f val_wr=%.4f test_wr=%.4f test_trades=%d",
+            "up_thresh=%.3f down_thresh=%.3f val_wr=%.4f test_wr=%.4f test_trades=%d",
             r["fold"], r["train_size"], r["val_size"], r["test_size"],
-            r["threshold"], r["val_wr"], r["test_wr"], r["test_trades"],
+            r["up_threshold"], r["down_threshold"], r["val_wr"], r["test_wr"], r["test_trades"],
         )
 
     return {
@@ -353,6 +365,40 @@ def walk_forward_validation(X: np.ndarray, y: np.ndarray) -> dict:
         "min_wr": min_wr,
         "max_wr": max_wr,
     }
+
+
+
+def aggregate_wf_thresholds(wf_results: dict) -> tuple:
+    """Compute median UP and DOWN thresholds across walk-forward folds.
+
+    Args:
+        wf_results: dict returned by walk_forward_validation(), must contain
+                    'fold_results' list where each entry has 'up_threshold'
+                    and 'down_threshold'.
+
+    Returns:
+        (up_threshold, down_threshold) both as float, derived via median.
+        Falls back to (0.5, 0.5) if fold_results is empty.
+    """
+    fold_results = wf_results.get("fold_results", [])
+    if not fold_results:
+        log.warning("aggregate_wf_thresholds: no fold results — returning defaults (0.5, 0.5)")
+        return 0.5, 0.5
+
+    up_thresholds = [r["up_threshold"] for r in fold_results]
+    down_thresholds = [r["down_threshold"] for r in fold_results]
+
+    up_threshold = float(np.median(up_thresholds))
+    down_threshold = float(np.median(down_thresholds))
+
+    log.info(
+        "aggregate_wf_thresholds: %d folds -> up_threshold=%.4f (median of %s) "
+        "down_threshold=%.4f (median of %s)",
+        len(fold_results),
+        up_threshold, [f"{t:.4f}" for t in up_thresholds],
+        down_threshold, [f"{t:.4f}" for t in down_thresholds],
+    )
+    return up_threshold, down_threshold
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +439,8 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
 
     # ---------------------------------------------------------------------------
     # Final model: train on ALL data using the same 80/20 val split for early
-    # stopping, then sweep threshold on that val set.
+    # stopping only — thresholds are derived from walk-forward validation above,
+    # not from a sweep on this val set.
     #
     # Time-series split: DO NOT SHUFFLE
     # split_boundary = index where validation ends and test begins (75% of data).
@@ -432,25 +479,29 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
 
     log.info("train: best_iteration=%d", model.best_iteration)
 
-    # Threshold sweep on VALIDATION set only — never test set
-    val_probs = model.predict(X_val)
-    best_threshold, best_wr, best_trades_per_day = sweep_threshold(val_probs, y_val)
+    # ---------------------------------------------------------------------------
+    # Thresholds derived from walk-forward validation (Option 2).
+    # Early stopping still uses the val set (unchanged).
+    # UP and DOWN thresholds are the median across all WFV folds.
+    # ---------------------------------------------------------------------------
+    best_threshold, down_threshold = aggregate_wf_thresholds(wf_results)
 
-    # ---------------------------------------------------------------------------
-    # DOWN threshold sweep — validate independently on the same val set.
-    # P(DOWN) = 1 - P(UP).  Labels are inverted: 1 means price actually went DOWN.
-    # This is NOT a symmetric assumption — the sweep finds the actual best
-    # threshold for the inverted probability and checks whether WR >= 59%.
-    # down_enabled=True only when the DOWN side passes the same deployment gate.
-    # ---------------------------------------------------------------------------
+    # Evaluate val set for logging only (not used to set thresholds)
+    val_probs = model.predict(X_val)
+    _, best_wr, best_trades_per_day = sweep_threshold(val_probs, y_val)
     down_probs_val = 1.0 - val_probs
-    y_val_down = 1 - y_val  # label=1 means price went DOWN
-    down_threshold, down_val_wr, down_val_tpd = sweep_threshold(down_probs_val, y_val_down)
+    y_val_down = 1 - y_val
+    _, down_val_wr, down_val_tpd = sweep_threshold(down_probs_val, y_val_down)
+
     down_enabled = down_val_wr >= 0.59
 
     log.info(
-        "train: DOWN sweep — down_threshold=%.3f down_val_wr=%.4f down_val_tpd=%.1f down_enabled=%s",
-        down_threshold, down_val_wr, down_val_tpd, down_enabled,
+        "train: WFV-derived thresholds — up_threshold=%.3f down_threshold=%.3f",
+        best_threshold, down_threshold,
+    )
+    log.info(
+        "train: val reference — val_wr=%.4f down_val_wr=%.4f down_val_tpd=%.1f down_enabled=%s",
+        best_wr, down_val_wr, down_val_tpd, down_enabled,
     )
     if not down_enabled:
         log.warning(
@@ -509,8 +560,9 @@ def train(df_features: pd.DataFrame, slot: str = "current") -> dict:
     # The caller decides what to do with a blocked candidate.
     metadata = {
         "train_date": datetime.utcnow().isoformat(),
-        # UP side
+        # UP side — threshold is WFV-derived (median across folds), val_wr is reference only
         "threshold": best_threshold,
+        "threshold_source": "walk_forward_validation_median",
         "val_wr": best_wr,
         "val_trades_per_day": best_trades_per_day,
         "test_wr": test_metrics["wr"],
